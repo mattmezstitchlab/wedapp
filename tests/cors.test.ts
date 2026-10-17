@@ -60,6 +60,17 @@ async function testServer(
 }
 
 describe("Mobile API origin and cookie isolation", () => {
+  it("trusts exact Vercel-injected deployment origins, not arbitrary origins", () => {
+    vi.stubEnv("VERCEL_URL", "wedapp-preview.example.test");
+    vi.stubEnv("VERCEL_BRANCH_URL", "wedapp-branch.example.test");
+    vi.stubEnv("VERCEL_PROJECT_PRODUCTION_URL", "wedapp.example.test");
+    expect(trustedExpoWebOrigins()).toEqual(new Set([
+      "https://wedapp-preview.example.test",
+      "https://wedapp-branch.example.test",
+      "https://wedapp.example.test",
+    ]));
+    expect(trustedExpoWebOrigins().has("https://attacker.example.test")).toBe(false);
+  });
   it("derives only the paired 8328 preview from the platform 8081 origin", () => {
     vi.stubEnv("NODE_ENV", "development");
     vi.stubEnv(

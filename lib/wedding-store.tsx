@@ -1,95 +1,271 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type PropsWithChildren } from "react";
-import { trpc } from "./trpc";
-import { assignments as seedAssignments, moments as seedMoments, tasks as seedTasks, vendors as seedVendors, type Assignment, type Moment, type Task, type Vendor, type VendorStatus } from "./wedding-data";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type PropsWithChildren,
+} from "react";
+import type { Task, Vendor, VendorStatus } from "./wedding-data";
+import {
+  assignVendor,
+  initialSnapshot,
+  parseSnapshot,
+  relocateAssignment,
+  type Snapshot,
+} from "./wedding-workspace";
 
 const STORAGE_KEY = "grandjour.workspace.v1";
-
-type Snapshot = { moments: Moment[]; vendors: Vendor[]; assignments: Assignment[]; tasks: Task[] };
-
+const uniqueId = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+type State = { snapshot: Snapshot; previous: Snapshot | null };
 type WeddingContextValue = Snapshot & {
+  saveEvent: (event: Snapshot["event"]) => void;
+  hydrated: boolean;
+  storageMessage: string;
   selectedVendorId: string | null;
   setSelectedVendorId: (id: string | null) => void;
   addAssignment: (vendorId: string, momentId: string) => void;
   moveAssignment: (assignmentId: string, momentId: string) => void;
+  removeAssignment: (assignmentId: string) => void;
+  saveVendor: (vendor: Vendor) => void;
+  removeVendor: (vendorId: string) => void;
+  saveTask: (task: Task) => void;
+  removeTask: (taskId: string) => void;
   toggleTask: (taskId: string) => void;
   updateVendorStatus: (vendorId: string, status: VendorStatus) => void;
   undo: () => void;
   canUndo: boolean;
   resetDemo: () => void;
 };
-
-const initialSnapshot: Snapshot = { moments: seedMoments, vendors: seedVendors, assignments: seedAssignments, tasks: seedTasks };
-
 const WeddingContext = createContext<WeddingContextValue | null>(null);
 
 export function WeddingProvider({ children }: PropsWithChildren) {
-  const [snapshot, setSnapshot] = useState<Snapshot>(initialSnapshot);
-  const [previous, setPrevious] = useState<Snapshot | null>(null);
+  const [state, setState] = useState<State>({
+    snapshot: initialSnapshot,
+    previous: null,
+  });
+  const { snapshot, previous } = state;
   const [selectedVendorId, setSelectedVendorId] = useState<string | null>(null);
   const [hydrated, setHydrated] = useState(false);
-  const { mutate: persistSnapshot } = trpc.wedding.saveSnapshot.useMutation();
+  const [storageMessage, setStorageMessage] = useState(
+    "Chargement de la sauvegarde…",
+  );
+  const writes = useRef(Promise.resolve());
 
   useEffect(() => {
-    AsyncStorage.getItem(STORAGE_KEY).then((raw) => {
-      if (raw) {
-        try {
-          const parsed = JSON.parse(raw) as Snapshot;
-          if (parsed.moments && parsed.vendors && parsed.assignments && parsed.tasks) setSnapshot(parsed);
-        } catch {
-          // Keep the seeded workspace when local data is invalid.
-        }
-      }
-      setHydrated(true);
-    });
+    let active = true;
+    AsyncStorage.getItem(STORAGE_KEY)
+      .then((raw) => {
+        const restored = parseSnapshot(raw);
+        if (active) setState({ snapshot: restored, previous: null });
+      })
+      .catch(() => {
+        if (active)
+          setStorageMessage(
+            "Sauvegarde illisible ou inaccessible. Vos changements ne seront pas enregistrés tant que vous n’aurez pas rechargé ou réinitialisé l’espace.",
+          );
+        // Do not overwrite unreadable data. Reset is an explicit recovery action.
+      })
+      .then(() => {
+        if (active) setHydrated(true);
+      });
+    return () => {
+      active = false;
+    };
   }, []);
 
   useEffect(() => {
-    AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot)).catch(() => undefined);
-    if (hydrated) persistSnapshot({ eventId: 1, snapshot });
-  }, [hydrated, persistSnapshot, snapshot]);
+    if (!hydrated || storageMessage.startsWith("Sauvegarde illisible")) return;
+    let active = true;
+    setStorageMessage("Enregistrement sur cet appareil…");
+    // Serialize writes so an older asynchronous write cannot overwrite a newer one.
+    writes.current = writes.current
+      .then(() => AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot)))
+      .then(() => {
+        if (active)
+          setStorageMessage(
+            "Enregistré sur cet appareil uniquement · pas de synchronisation cloud",
+          );
+      })
+      .catch(() => {
+        if (active)
+          setStorageMessage(
+            "Échec de sauvegarde sur cet appareil. Gardez cette page ouverte et vérifiez l’espace de stockage.",
+          );
+      });
+    return () => {
+      active = false;
+    };
+    // Only data changes should trigger a write, not status messages.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hydrated, snapshot]);
 
-  const commit = useCallback((next: Snapshot) => {
-    setPrevious(snapshot);
-    setSnapshot(next);
-  }, [snapshot]);
-
-  const addAssignment = useCallback((vendorId: string, momentId: string) => {
-    if (snapshot.assignments.some((assignment) => assignment.vendorId === vendorId && assignment.momentId === momentId)) return;
-    const vendor = snapshot.vendors.find((item) => item.id === vendorId);
-    if (!vendor) return;
-    commit({ ...snapshot, assignments: [...snapshot.assignments, { id: `assignment-${Date.now()}`, vendorId, momentId, responsibility: vendor.service, startTime: "18:00", endTime: "20:00" }] });
-  }, [commit, snapshot]);
-
-  const moveAssignment = useCallback((assignmentId: string, momentId: string) => {
-    commit({ ...snapshot, assignments: snapshot.assignments.map((assignment) => assignment.id === assignmentId ? { ...assignment, momentId } : assignment) });
-  }, [commit, snapshot]);
-
-  const toggleTask = useCallback((taskId: string) => {
-    commit({ ...snapshot, tasks: snapshot.tasks.map((task) => task.id === taskId ? { ...task, done: !task.done } : task) });
-  }, [commit, snapshot]);
-
-  const updateVendorStatus = useCallback((vendorId: string, status: VendorStatus) => {
-    commit({ ...snapshot, vendors: snapshot.vendors.map((vendor) => vendor.id === vendorId ? { ...vendor, status, confirmed: status === "Réservé" || status === "Payé" } : vendor) });
-  }, [commit, snapshot]);
-
-  const undo = useCallback(() => {
-    if (!previous) return;
-    setSnapshot(previous);
-    setPrevious(null);
-  }, [previous]);
-
+  const commit = useCallback(
+    (transform: (current: Snapshot) => Snapshot) => {
+      if (!hydrated) return;
+      setState((current) => {
+        const next = transform(current.snapshot);
+        return next === current.snapshot
+          ? current
+          : { snapshot: next, previous: current.snapshot };
+      });
+    },
+    [hydrated],
+  );
+  const saveEvent = useCallback(
+    (event: Snapshot["event"]) => commit((current) => ({ ...current, event })),
+    [commit],
+  );
+  const addAssignment = useCallback(
+    (vendorId: string, momentId: string) => {
+      const id = uniqueId();
+      commit((current) => assignVendor(current, vendorId, momentId, id));
+    },
+    [commit],
+  );
+  const moveAssignment = useCallback(
+    (id: string, momentId: string) =>
+      commit((current) => relocateAssignment(current, id, momentId)),
+    [commit],
+  );
+  const removeAssignment = useCallback(
+    (id: string) =>
+      commit((current) => ({
+        ...current,
+        assignments: current.assignments.filter((a) => a.id !== id),
+      })),
+    [commit],
+  );
+  const saveVendor = useCallback(
+    (vendor: Vendor) =>
+      commit((current) => ({
+        ...current,
+        vendors: current.vendors.some((v) => v.id === vendor.id)
+          ? current.vendors.map((v) => (v.id === vendor.id ? vendor : v))
+          : [...current.vendors, vendor],
+      })),
+    [commit],
+  );
+  const removeVendor = useCallback(
+    (id: string) => {
+      commit((current) => ({
+        ...current,
+        vendors: current.vendors.filter((v) => v.id !== id),
+        assignments: current.assignments.filter((a) => a.vendorId !== id),
+      }));
+      setSelectedVendorId((selected) => (selected === id ? null : selected));
+    },
+    [commit],
+  );
+  const saveTask = useCallback(
+    (task: Task) =>
+      commit((current) => ({
+        ...current,
+        tasks: current.tasks.some((t) => t.id === task.id)
+          ? current.tasks.map((t) => (t.id === task.id ? task : t))
+          : [...current.tasks, task],
+      })),
+    [commit],
+  );
+  const removeTask = useCallback(
+    (id: string) =>
+      commit((current) => ({
+        ...current,
+        tasks: current.tasks.filter((t) => t.id !== id),
+      })),
+    [commit],
+  );
+  const toggleTask = useCallback(
+    (id: string) =>
+      commit((current) => ({
+        ...current,
+        tasks: current.tasks.map((t) =>
+          t.id === id ? { ...t, done: !t.done } : t,
+        ),
+      })),
+    [commit],
+  );
+  const updateVendorStatus = useCallback(
+    (id: string, status: VendorStatus) =>
+      commit((current) => ({
+        ...current,
+        vendors: current.vendors.map((v) =>
+          v.id === id
+            ? {
+                ...v,
+                status,
+                confirmed: status === "Réservé" || status === "Payé",
+              }
+            : v,
+        ),
+      })),
+    [commit],
+  );
+  const undo = useCallback(
+    () =>
+      setState((current) =>
+        current.previous
+          ? { snapshot: current.previous, previous: null }
+          : current,
+      ),
+    [],
+  );
   const resetDemo = useCallback(() => {
-    setPrevious(snapshot);
-    setSnapshot(initialSnapshot);
-  }, [snapshot]);
-
-  const value = useMemo(() => ({ ...snapshot, selectedVendorId, setSelectedVendorId, addAssignment, moveAssignment, toggleTask, updateVendorStatus, undo, canUndo: Boolean(previous), resetDemo }), [addAssignment, moveAssignment, previous, resetDemo, selectedVendorId, snapshot, toggleTask, undo, updateVendorStatus]);
-  return <WeddingContext.Provider value={value}>{children}</WeddingContext.Provider>;
+    setStorageMessage("Réinitialisation…");
+    commit(() => parseSnapshot(JSON.stringify(initialSnapshot)));
+    setSelectedVendorId(null);
+  }, [commit]);
+  const value = useMemo(
+    () => ({
+      ...snapshot,
+      saveEvent,
+      hydrated,
+      storageMessage,
+      selectedVendorId,
+      setSelectedVendorId,
+      addAssignment,
+      moveAssignment,
+      removeAssignment,
+      saveVendor,
+      removeVendor,
+      saveTask,
+      removeTask,
+      toggleTask,
+      updateVendorStatus,
+      undo,
+      canUndo: Boolean(previous),
+      resetDemo,
+    }),
+    [
+      snapshot,
+      saveEvent,
+      hydrated,
+      storageMessage,
+      selectedVendorId,
+      addAssignment,
+      moveAssignment,
+      removeAssignment,
+      saveVendor,
+      removeVendor,
+      saveTask,
+      removeTask,
+      toggleTask,
+      updateVendorStatus,
+      undo,
+      previous,
+      resetDemo,
+    ],
+  );
+  return (
+    <WeddingContext.Provider value={value}>{children}</WeddingContext.Provider>
+  );
 }
-
 export function useWedding() {
   const context = useContext(WeddingContext);
-  if (!context) throw new Error("useWedding must be used inside WeddingProvider");
+  if (!context)
+    throw new Error("useWedding must be used inside WeddingProvider");
   return context;
 }

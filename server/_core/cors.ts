@@ -29,6 +29,11 @@ function pairedPreviewOrigin(packagerOrigin: string): string | null {
 
 export function trustedExpoWebOrigins(): Set<string> {
   const origins = new Set<string>();
+  // Vercel injects these hostnames; never derive trust from a caller-supplied Origin.
+  for (const name of ["VERCEL_URL", "VERCEL_BRANCH_URL", "VERCEL_PROJECT_PRODUCTION_URL"]) {
+    const hostname = process.env[name];
+    if (hostname && /^[a-zA-Z0-9.-]+$/.test(hostname)) origins.add(`https://${hostname}`);
+  }
   const packager = configuredOrigin("EXPO_PACKAGER_PROXY_URL");
   const preview = configuredOrigin("EXPO_WEB_PREVIEW_URL");
   // Loopback origins are request-local below. Never put one in this process-wide set: the

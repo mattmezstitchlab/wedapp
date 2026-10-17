@@ -5,7 +5,8 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Avatar, Card, IconButton, Pill, SectionLabel, palette } from "@/components/wedding/primitives";
-import { eventInfo, type VendorStatus } from "@/lib/wedding-data";
+import { Action, EventEditor } from "@/components/wedding/editor";
+import { type VendorStatus } from "@/lib/wedding-data";
 import { detectConflicts, formatEuro, getBudget, getProgress } from "@/lib/wedding-rules";
 import { useWedding } from "@/lib/wedding-store";
 
@@ -20,14 +21,21 @@ const statusTone: Record<VendorStatus, "default" | "success" | "warning" | "cora
 
 export default function PlanningScreen() {
   const insets = useSafeAreaInsets();
-  const { moments, vendors, assignments, tasks, selectedVendorId, setSelectedVendorId, addAssignment, moveAssignment, undo, canUndo } = useWedding();
+  const { event, moments, vendors, assignments, tasks, selectedVendorId, setSelectedVendorId, addAssignment, moveAssignment, removeAssignment, storageMessage, resetDemo, undo, canUndo } = useWedding();
+  const [editingEvent, setEditingEvent] = useState(false);
+  const [showOptions, setShowOptions] = useState(false);
+  const [confirmReset, setConfirmReset] = useState(false);
+  const [activeMomentId, setActiveMomentId] = useState<string | null>(null);
   const [notice, setNotice] = useState("Touchez un prestataire puis un moment pour l’affecter.");
+  const eventDate = new Date(`${event.date}T12:00:00`);
+  const daysToGo = Math.ceil((new Date(`${event.date}T00:00:00`).getTime() - new Date().setHours(0, 0, 0, 0)) / 86400000);
   const selectedVendor = vendors.find((vendor) => vendor.id === selectedVendorId);
   const budget = useMemo(() => getBudget(vendors, assignments), [assignments, vendors]);
   const conflicts = useMemo(() => detectConflicts(assignments, vendors, moments), [assignments, moments, vendors]);
   const progress = useMemo(() => getProgress(vendors, assignments, tasks), [assignments, tasks, vendors]);
 
   const handleMomentPress = (momentId: string) => {
+    setActiveMomentId(momentId);
     if (!selectedVendorId) {
       setNotice("Choisissez d’abord une carte prestataire dans la bibliothèque ou le planning.");
       return;
@@ -41,11 +49,13 @@ export default function PlanningScreen() {
     <View style={[styles.screen, { paddingTop: Math.max(insets.top, 14) }]}>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <View style={styles.header}>
-          <View style={styles.brandLine}><View style={styles.brandMark}><Text style={styles.brandMarkText}>GJ</Text></View><View><Text style={styles.eyebrow}>LE GRAND JOUR</Text><Text style={styles.eventName}>{eventInfo.name}</Text></View></View>
-          <View style={styles.headerActions}><IconButton icon="notifications-none" label="Notifications" /><IconButton icon="more-horiz" label="Plus d’options" /></View>
+          <View style={styles.brandLine}><View style={styles.brandMark}><Text style={styles.brandMarkText}>GJ</Text></View><View><Text style={styles.eyebrow}>LE GRAND JOUR</Text><Text style={styles.eventName}>{event.name}</Text></View></View>
+          <View style={styles.headerActions}><IconButton icon="notifications-none" label="Voir les tâches" onPress={() => router.push("/tasks")} /><IconButton icon="more-horiz" label="Plus d’options" onPress={() => setShowOptions(!showOptions)} /></View>
         </View>
 
-        <View style={styles.contextRow}><View><Text style={styles.date}>{eventInfo.date}</Text><Text style={styles.location}>{eventInfo.location}</Text></View><View style={styles.dayBadge}><Text style={styles.dayNumber}>{eventInfo.daysToGo}</Text><Text style={styles.dayLabel}>JOURS</Text></View></View>
+        <Text accessibilityLiveRegion="polite" style={styles.notice}>{storageMessage}</Text>
+        {showOptions && <Card><Action label="Personnaliser le mariage" onPress={() => setEditingEvent(true)} /><Text>Les données d’exemple sont modifiables. Les comptes et la collaboration cloud ne sont pas configurés.</Text><Action danger label={confirmReset ? "Confirmer la réinitialisation de cet appareil" : "Réinitialiser les données d’exemple"} onPress={() => { if (confirmReset) { resetDemo(); setConfirmReset(false); setShowOptions(false); } else setConfirmReset(true); }} /></Card>}
+        <View style={styles.contextRow}><View><Text style={styles.date}>{eventDate.toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}</Text><Text style={styles.location}>{event.location}</Text></View><View style={styles.dayBadge}><Text style={styles.dayNumber}>{Math.abs(daysToGo)}</Text><Text style={styles.dayLabel}>{daysToGo < 0 ? "PASSÉS" : "JOURS"}</Text></View></View>
 
         <Card style={styles.progressCard}>
           <View style={styles.progressTop}><View><Text style={styles.progressKicker}>VOTRE ÉLAN</Text><Text style={styles.progressTitle}>Le prochain geste est déjà là.</Text></View><Text style={styles.progressValue}>{progress}%</Text></View>
@@ -70,8 +80,18 @@ export default function PlanningScreen() {
         <View style={styles.sectionHeader}><SectionLabel>À L’INTÉRIEUR DU MOMENT</SectionLabel><Pressable onPress={() => router.push("/library")}><Text style={styles.textButton}>Voir la bibliothèque</Text></Pressable></View>
         {selectedVendor ? <Card style={styles.selectedCard} onPress={() => router.push("/library")}><View style={styles.selectedTop}><Avatar source={{ uri: selectedVendor.photo }} size={54} /><View style={{ flex: 1, marginLeft: 12 }}><View style={styles.vendorNameRow}><Text style={styles.vendorName}>{selectedVendor.name}</Text><Pill tone={statusTone[selectedVendor.status]}>{selectedVendor.status}</Pill></View><Text style={styles.vendorService}>{selectedVendor.service}</Text></View><IconButton icon="close" label="Fermer la sélection" onPress={() => setSelectedVendorId(null)} /></View><View style={styles.selectedMeta}><View><Text style={styles.metaLabel}>PRESTATION</Text><Text style={styles.metaValue}>{selectedVendor.contact}</Text></View><View><Text style={styles.metaLabel}>BUDGET</Text><Text style={styles.metaValue}>{formatEuro(selectedVendor.price)}</Text></View><View><Text style={styles.metaLabel}>DISPONIBILITÉ</Text><Text style={styles.metaValue} numberOfLines={1}>{selectedVendor.availability}</Text></View></View><Text style={styles.notice}>{notice}</Text></Card> : <Card style={styles.emptyCard} onPress={() => router.push("/library")}><View style={styles.emptyIcon}><MaterialIcons name="touch-app" size={22} color={palette.slate} /></View><View style={{ flex: 1 }}><Text style={styles.emptyTitle}>Composez votre journée</Text><Text style={styles.emptyText}>{notice}</Text></View><MaterialIcons name="arrow-forward" size={20} color={palette.slate} /></Card>}
 
+        <SectionLabel>AFFECTATIONS {activeMomentId ? `· ${moments.find((m) => m.id === activeMomentId)?.title}` : "· TOUS LES MOMENTS"}</SectionLabel>
+        {activeMomentId && <Action label="Voir tous les moments" onPress={() => setActiveMomentId(null)} />}
+        {assignments.filter((a) => !activeMomentId || a.momentId === activeMomentId).map((assignment) => <Card key={assignment.id} style={{ marginBottom: 10 }}>
+          <Text style={styles.vendorName}>{vendors.find((v) => v.id === assignment.vendorId)?.name}</Text>
+          <Text style={styles.vendorService}>{moments.find((m) => m.id === assignment.momentId)?.title} · {assignment.startTime}–{assignment.endTime}</Text>
+          <Text style={styles.metaLabel}>DÉPLACER VERS</Text>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 5 }}>{moments.filter((m) => m.id !== assignment.momentId).map((moment) => <Action key={moment.id} label={moment.title} onPress={() => moveAssignment(assignment.id, moment.id)} />)}</View>
+          <Action danger label="Retirer du planning" onPress={() => removeAssignment(assignment.id)} />
+        </Card>)}
         <View style={styles.bottomMetrics}><View style={styles.metricBlock}><Text style={styles.metricLabel}>BUDGET ENGAGÉ</Text><Text style={styles.metricValue}>{formatEuro(budget.confirmed)}</Text><Text style={styles.metricCaption}>sur {formatEuro(budget.estimated)}</Text></View><View style={styles.verticalRule} /><View style={styles.metricBlock}><Text style={styles.metricLabel}>À CONFIRMER</Text><Text style={[styles.metricValue, { color: palette.coral }]}>{budget.missing.length}</Text><Text style={styles.metricCaption}>informations manquantes</Text></View></View>
       </ScrollView>
+      {editingEvent && <EventEditor onClose={() => setEditingEvent(false)} />}
     </View>
   );
 }

@@ -21,7 +21,7 @@ export function SectionLabel({ children, action, onAction }: { children: React.R
 }
 
 export function IconButton({ icon, onPress, label, tone = "default" }: { icon: keyof typeof MaterialIcons.glyphMap; onPress?: () => void; label?: string; tone?: "default" | "soft" }) {
-  return <Pressable accessibilityLabel={label} onPress={onPress} style={({ pressed }) => [styles.iconButton, tone === "soft" && styles.iconButtonSoft, pressed && styles.pressed]}><MaterialIcons name={icon} size={20} color={palette.slate} /></Pressable>;
+  return <Pressable accessibilityRole="button" accessibilityLabel={label} onPress={(event) => { event.stopPropagation(); onPress?.(); }} style={({ pressed }) => [styles.iconButton, tone === "soft" && styles.iconButtonSoft, pressed && styles.pressed]}><MaterialIcons name={icon} size={20} color={palette.slate} /></Pressable>;
 }
 
 export function Pill({ children, tone = "default" }: { children: React.ReactNode; tone?: "default" | "success" | "warning" | "coral" }) {
